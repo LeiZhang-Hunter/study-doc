@@ -17,3 +17,6 @@ StockFactory factory;
 ```
 shared_ptr<StockFactory> factory(new StockFactory);
 ```
+
+这样一来,boost::function 里保存了一份 shared_ptr<StockFactory>,可以保证调用 StockFactory::deleteStock 的时候那个 StockFactory
+ 对象还活着,因为智能指针只有在引用计数器是0的时候才会被释放掉
