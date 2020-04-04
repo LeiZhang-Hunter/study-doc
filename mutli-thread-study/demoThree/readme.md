@@ -50,7 +50,7 @@ int main()
 {
     int c = 1;
     int d = 2;
-    auto p = std::bind(sum,_2,_1);
+    std::function<int(int,int)> p = std::bind(sum,_2,_1);
     std::cout<<p(1,2)<<std::endl;
     return  0;
 
