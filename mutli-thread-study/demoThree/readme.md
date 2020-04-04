@@ -56,3 +56,7 @@ int main()
 
 }
 ```
+
+###总结一下上个demo
+
+虽然看似正确，确是暗藏风险，因为StockFactory::get() 把原始指针 this 保存到了 boost::function，如 果 StockFactory 的 生 命 期 比 Stock 短, 那 么 Stock 析 构 时 去 回 调 StockFactory::deleteStock 就会 core dump。因为你无法知道这个指针是否存活，所以我们可以enable_shared_from_this
