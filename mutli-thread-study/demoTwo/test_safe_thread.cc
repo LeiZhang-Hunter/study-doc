@@ -67,18 +67,27 @@ public:
 class Foo : public Observer
 {
 public:
+    Foo()
+    {
+        printf("%ld:Foo::create() %p\n",pthread_self(), this);
+    }
     virtual void update()
     {
         printf("%ld:Foo::update() %p\n",pthread_self(), this);
     }
-};
 
+    ~Foo()
+    {
+        printf("%ld:Foo::destroy() %p\n",pthread_self(), this);
+    }
+};
 
 
 class Observable{
 public:
     void register_(weak_ptr<Observer> x)
     {
+        MutexLockGuard guard(mutex_);
         observers.push_back(x);
     }
 
@@ -92,10 +101,12 @@ public:
             if(obj)
             {
                 obj->update();
+                it++;
             }else{
                 it = observers.erase(it);
             }
         }
+
     }
 
 private:
@@ -104,68 +115,46 @@ private:
     typedef std::vector<weak_ptr<Observer>>::iterator Iterator;
 };
 
+Observable subject;
+int sum = 10;
+
 void* threadOne(void* arg)
 {
-    int count = 0;
-    while (1) {
-        Foo *p = new Foo;
+    shared_ptr<Foo> foo = make_shared<Foo>();
+    weak_ptr<Foo> w(foo);
+    subject.register_(w);
+    subject.notifyObservers();
 
-        subject.notifyObservers();
-        delete p;
-        subject.notifyObservers();
-        count++;
-        if(count== sum)
-        {
-            break;
-        }
-    }
+
 }
 
 void* threadTwo(void* arg)
 {
-    int count = 0;
-    while (1) {
-        Foo *p = new Foo;
-        p->observe(&subject);
-        subject.notifyObservers();
-        delete p;
-        subject.notifyObservers();
-        count++;
-        if(count== sum)
-        {
-            break;
-        }
-    }
+    shared_ptr<Foo> foo = make_shared<Foo>();
+    subject.register_(foo);
+    subject.notifyObservers();
+
 
 }
 
 void* threadThree(void* arg)
 {
-    int count = 0;
-    while (1) {
-        Foo *p = new Foo;
-        p->observe(&subject);
-        subject.notifyObservers();
-        delete p;
-        subject.notifyObservers();
-        count++;
-        if(count== sum)
-        {
-            break;
-        }
-    }
+    shared_ptr<Foo> foo = make_shared<Foo>();
+    subject.register_(foo);
+    subject.notifyObservers();
 }
 
 int main()
 {
+
     pthread_t thread1;
     pthread_t thread2;
     pthread_t thread3;
-    pthread_create(&thread1,NULL,threadOne,NULL);
-    pthread_create(&thread2,NULL,threadTwo,NULL);
-    pthread_create(&thread3,NULL,threadThree,NULL);
+    pthread_create(&thread1, nullptr,threadOne,nullptr);
+    pthread_create(&thread2,nullptr,threadTwo,nullptr);
+    pthread_create(&thread3,nullptr,threadThree,nullptr);
 
-    pthread_join(thread1,NULL);
-    pthread_join(thread2,NULL);
-    pthread_join(thread3,NULL);
+    pthread_join(thread1,nullptr);
+    pthread_join(thread2,nullptr);
+    pthread_join(thread3,nullptr);
 }
