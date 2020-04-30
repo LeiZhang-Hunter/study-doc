@@ -141,6 +141,7 @@ void enqueue(int x)
     mutex.lock();
     queue.push_back(x);
     cond.notify();
+    mutex.unLock();
 }
 
 
