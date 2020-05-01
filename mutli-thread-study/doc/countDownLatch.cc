@@ -44,7 +44,6 @@ public:
     int lock()
     {
         int res = pthread_mutex_lock(&mutex);
-        std::cout<<res<<std::endl;
         return res;
     }
 
@@ -119,30 +118,66 @@ private:
     pthread_cond_t pcond_;
 };
 
+class CountDownLatch;
+
+
+
+
+class CountDownLatch:noncopyable{
+public:
+    explicit CountDownLatch(int count) : mutex_(),cond_(mutex_),count_(count)
+    {
+    }
+    void wait()
+    {
+        MutexLockGuard guard(mutex_);
+        while(count_ > 0)
+        {
+            cond_.wait();
+        }
+    }
+
+    void countDOwn()
+    {
+        MutexLockGuard guard(mutex_);
+
+        --count_;
+
+        if(count_ == 0)
+        {
+            cond_.notifyAll();
+        }
+    }
+
+    int getCount() const
+    {
+        MutexLockGuard guard(mutex_);
+        return count_;
+    }
+
+private:
+    mutable MutexLock mutex_;
+    Condition cond_ __attribute__((guarded_by(mutex_)));
+    int count_;
+};
+CountDownLatch syncTool(10);
 
 class CThread{
 public:
     //线程进程
     static void* threadProc(void* args)
     {
-
+        sleep(4);
+        syncTool.countDOwn();
+        sleep(3);
     }
 };
 
-void startThreadPool(void* args)
-{
-
-}
-
-//线程进程
-void* threadProc(void* args)
-{
-
-}
-
 int main()
 {
-    int count = 5;
+
+
+    int count = 10;
     int i;
     pthread_t tid;
     pthread_t pthread_pool[count];
@@ -152,4 +187,12 @@ int main()
     {
         pthread_create(&tid, nullptr,&CThread::threadProc, nullptr);
     }
+
+    syncTool.wait();
+
+    for(i=0;i<count;i++)
+    {
+        pthread_join(tid, nullptr);
+    }
+
 }
