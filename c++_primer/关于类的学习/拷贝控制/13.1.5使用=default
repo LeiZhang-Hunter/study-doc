@@ -1,0 +1,15 @@
+#13.1.5使用=default
+
+我们可以通过将拷贝控制成员定义为=default来显示的要求编译器生成合成的版本。
+
+我们在类内调用=default修饰成员的声明时候，合成的函数将隐式声明为内联函数，应该只对成员的类定义使用=default
+
+```
+class Foo{
+public:
+    Foo() = default;
+    Foo(const Foo& foo) = default;
+    Foo& operator=(const Foo& foo);
+    ~Foo() = default;
+};
+```
