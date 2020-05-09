@@ -1,0 +1,130 @@
+我们还是要说一下非阻塞的write结合之前的阻塞的write
+
+先说非阻塞的write吧，如果说write 缓冲区已经满了，那么系统将会投入睡眠，一直到缓冲区被清出缓冲，可以再次被写入，非阻塞模式的IO会更加复杂，我们需要维护着两个缓冲区，to容纳从标准输入到服务器去的数据（write的数据），fr容纳自服务器到标准输出到标准输出的数据（read的数据）
+
+其中toiptr指针只想从标准输入读入的数据可以存放下一个字节。tooptr指向下一个必须写到套接字的字节。有（toiptr-tooptr）个字节需写到套接字。
+
+####16.3非阻塞connect
+
+当在一个非阻塞的TCP上调用connect的时候，conncet会立即返回一个EINPROGRESS错误，不过已经发起的三路握手仍然在继续。我们紧接着使用select检测这个链接成功或失败的已经建立起来的条件。非阻塞的connect有三个用途。
+
+1）我们可以把三次握手叠加在其他处理上。完成一个connect要花一个RTT的时间，而RTT的波动范围十分大，从几十到几百毫秒甚至到几秒，这段时间内也许有其他程序等待着我们执行
+
+2）我们可以使用这个技术建立多个链接。这个用途已经随着web浏览器流行了起来。
+
+3）既然使用select等待链接建立，我们可以给select一个时间限制，让我们可以缩短connect的超时时间。应用程序有时需要一个更加短暂的时间，实现方法之一就是使用非阻塞connect。
+
+####16.4非阻塞获取客户时间
+
+设置套接字为非阻塞。
+
+发起非阻塞conncect。期望的错误是EINPROGRESS表示链接建立已经启动但是没有完成
+
+调用select等待套接字变为可读或者可写
+
+如果select返回0那么链接就超时了，我们需要关闭套接字否则三路握手还在继续。
+
+如果描述符可读或者可写，我们调用getsockopt获取套接字待处理的错误。如果处理成功，这个值将为0.如果链接建立错误，但是不同操作系统可能存在移植性问题，这个值就是errno的错误值。但是我们在最后判断了error是否为0，所以这个问题得到了解决。	
+
+关闭非阻塞状态并且返回，如果getsockopt返回的error为非0关闭套接字返回-1，否则返回0
+
+检测链接建立成功的方法：
+
+1）调用getpeername代替getsockopt，如果返回ENOTCONN错误的返回，那么连接建立失败，我们必须在接下来使用getsockopt的SO_ERROR选项获取待处理的错误码。
+
+2）以值为0的长度参数调用read。如果read失败，那么connect已经失败，read返回的errno给处理失败的原因否则read返回0，那么就是连接成功了。
+
+3）再次connect，如果成功返回的错误是EISCONN，也就是说第一次连接成功了。
+
+不幸的是非阻塞connect是最难移植的。
+
+
+被终端的connect
+
+被中断的connect：
+
+对于一个非阻塞的套接字，如果其上的connect调用在TCP三路握手王城前被终端，将会发生什么呢。如果不由内核重启将返回EINTR。我们不能再次吊起connect。这样会返回EADDRINUSE的错误。
+
+这种情况下我们只能调用select，链接建立成功时但会可写条件，建立失败则返回又可读又可写的条件。
+
+	//
+	// Created by root on 18-12-30.
+	//
+	#include <sys/socket.h>
+	#include <fcntl.h>
+	#include <errno.h>
+	#include <unistd.h>
+	#include <stdio.h>
+	#include <stdlib.h>
+	int connect_nonb(int sockfd,const struct sockaddr *saptr,socklen_t salen,int nsec)
+	{
+	    int flags,n,error;
+	    socklen_t len;
+
+	    fd_set rset;
+
+	    fd_set wset;
+
+	    struct timeval tval;
+
+	    flags = fcntl(sockfd,F_GETFL,0);
+
+	    //set no block
+	    fcntl(sockfd,F_SETFL,flags|O_NONBLOCK);
+
+	    error = 0;
+
+	    if((n=connect(sockfd,saptr,salen) < 0))
+	    {
+		if(errno != EINPROGRESS)
+		{
+		    return -1;
+		}
+	    }
+
+	    if( n == 0)
+		goto done;
+
+	    FD_ZERO(&rset);
+	    FD_SET(sockfd,&rset);
+	    wset = rset;
+
+	    tval.tv_sec = nsec;
+	    tval.tv_usec = 0;
+
+	    if((n = select(sockfd+1,&rset,&wset,NULL,&tval)) == 0)
+	    {
+		close(sockfd);
+		errno = ETIMEDOUT;
+		return  -1;
+	    }
+
+	    if(FD_ISSET(sockfd,&rset) || FD_ISSET(sockfd,&wset)){
+		len = sizeof(error);
+
+		if(getsockopt(sockfd,SOL_SOCKET,SO_ERROR,&error,&len) < 0)
+		    return  -1;
+	    }else{
+		printf("select error:socket not set");
+		exit(-1);
+	    }
+
+	    done:
+		fcntl(sockfd,F_SETFL,flags);//erstore
+
+		if(error)
+		{
+		    close(sockfd);
+		    errno = ETIMEDOUT;
+		    return  -1;
+		}
+
+		return 0;
+	}
+
+	int main()
+	{
+	    int scokfd = socket(AF_INET,SOCK_STREAM,0);
+	}
+	
+	
