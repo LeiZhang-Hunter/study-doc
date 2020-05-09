@@ -1,0 +1,443 @@
+#互斥锁和条件变量
+
+怎样多个线程或者多个进程同步活动。为允许在线程或进程之间共享数据，同步是必须的，互斥所和条件变量是同步的基本组成部分。
+
+互斥锁和条件变量出自posix.1的线程标准，它们总是可用来同步一个进程内的各个线程的。如果一个互斥所或者条件变量存放在多个进程间共享某个内存区中，那么posix还允许它用于这些进程的同步。
+
+本章介绍了生产生产者和消费者的问题，饼子啊解决这个问题的方案中使用互斥锁和条件变量。本例子中我们使用多线程，而不是多进程，因为让多个线程共享问题中采用的公共数据缓冲区十分简单，而在多个进程之间共享一个公共数据缓冲区则需要某种形式的共享内存区.
+
+####7.3 生产者和消费者	
+
+同步中有一个称为生产者和消费者的经典问题，也称为有界缓冲区的问题。一个或多个生产者创建着一个个数据条目，然后这些条目被一个或者多个线程或者进程处理，条目在生产和消费者之间通过ipc传递。
+
+我们一直使用unix管道处理这个问题。这就是说，如下shell管道就是这样的问题：
+
+	grep pattern chapters.* | wc -l
+	
+grep是单个生产者，wc是单个消费者。unix管道用作两者间的ipc形式。生产者和消费者间所需的同步是由内核以一定的方式处理的，内核以这种方式生产者write和消费者read。如果生产者超前消费（管道被填满了），内核就在生产者中调用write投入睡眠，直到有剩余空间.如果消费者超前生产者（管道是空），内核就在read时候投入到睡眠，直到管道中有一些数据位置
+
+我们这些类型的同步是隐式的；也就是说生产者和消费者甚至不知道内核在执行同步。如果我们改用posix消息队列或者system v消息队列作为生产者和消费者的ipc形式那么内核仍然会同步处理。
+
+然而共享内存区用作生产者和消费者之间的ipc形式的时候，生产者和消费者必须执行某种显示同步。我们将使用互斥锁。
+
+在单个进程中有多个生产者或者消费者的线程。证书数组buff包含有被生产和消费的条目。为了简单期间，生产者只是把buff{0】设置为0，把buff含有被生产和消费的条目。为了简单期间，生产者把buff【0】设置为0，buff【1】设置为1，如此等待，消费者是沿着当前数组进行，并验证每个数组元素都是正确的。
+
+在上一个例子中，我们只是关心多个生产者线程之间的同步。直到所有生产者线程都完成工作之后才会启动消费者线程。
+
+1.设置线程间共享的全局变量
+
+线程争取全局变量的调度通过pthread_mutex_lock实现同步
+
+	#include <stdio.h>
+	#include <ucontext.h>
+	#include <unistd.h>
+	#include <pthread.h>
+	#include <stdlib.h>
+	#define MAXNITEM 1000000
+	#define MAXNTHREADS 100
+	#define min(x,y) x<y ? x : y
+
+	int nitems;
+
+	int nitems;
+
+	//创建并且初始化结构体
+	struct{
+	    pthread_mutex_t mutex;
+	    int buf[MAXNITEM];
+	    int nput;
+	    int nval;
+	}shared={
+		PTHREAD_MUTEX_INITIALIZER
+	};
+
+	extern int pthread_setconcurrency (int __level) __THROW;
+
+	void *produce(void* arg)
+	{
+	    for(;;)
+	    {
+		//创建一个临界区锁
+		pthread_mutex_lock(&shared.mutex);
+
+		if(shared.nput >= nitems)
+		{
+		    pthread_mutex_unlock(&shared.mutex);
+		    return NULL;
+		}
+
+		shared.buf[shared.nput] = shared.nval;
+		shared.nput++;
+		shared.nval++;
+		pthread_mutex_unlock(&shared.mutex);
+		*((int *)arg) +=1;
+		printf("nput:%d\n", *((int *)arg));
+
+	    }
+	}
+
+	void *consume(void* arg)
+	{
+	    int i;
+	    for(i=0;i<nitems;i++)
+	    {
+		if(shared.buf[i] != i)
+		{
+		    printf("buf[%d] = %d\n",i,shared.buf[i]);
+		}
+	    }
+	    return NULL;
+	}
+
+	int main(int argc, const char *argv[]){
+	    int i,nthreads,count[MAXNTHREADS];
+
+	    pthread_t tid_produce[MAXNTHREADS],tid_consume;
+
+	    if(argc !=3 )
+	    {
+		printf("\033[error <#items> <threads>\033[0m");
+		exit(-1);
+	    }
+
+	    nitems = min(atoi(argv[1]),MAXNITEM);
+	    nthreads = min(atoi(argv[2]),MAXNTHREADS);
+
+	    //设置内核调用线程的并发数目
+	    pthread_setconcurrency(4);
+
+
+	    for(i=0;i<nthreads;i++)
+	    {
+
+		count[i] = 0;
+		pthread_create(&tid_produce[i],NULL,produce,&count[i]);
+	    }
+
+	    for(i=0;i<nthreads;i++){
+		pthread_join(tid_produce[i],NULL);
+		printf("count[%d] = %d\n",i,count[i]);
+	    }
+
+	    pthread_create(&tid_consume,NULL,consume,NULL);
+	    pthread_join(tid_consume,NULL);
+	    return 0;
+	}
+	
+####7.4对比上锁和等待
+
+现在展示互斥所用于上锁而不用于等待。我们把商议接中的生产消费者的例子改为在所有生产者线程启动后立即启动消费者线程。这样在生产者线程产生数据的同事，消费者线程就可以立即处理它，而不是像7-2中那样，消费者线程指导所有生产者线程都完成后才启动。现在我们必须同步生产者和消费者，确保消费者只处理已经由生产者存放的数据条目
+
+	#include <stdio.h>
+	#include <ucontext.h>
+	#include <unistd.h>
+	#include <pthread.h>
+	#include <stdlib.h>
+	#define MAXNITEM 1000000
+	#define MAXNTHREADS 100
+	#define min(x,y) x<y ? x : y
+
+	int nitems;
+
+	int nitems;
+
+	//创建并且初始化结构体
+	struct{
+	    pthread_mutex_t mutex;
+	    int buf[MAXNITEM];
+	    int nput;
+	    int nval;
+	}shared={
+		PTHREAD_MUTEX_INITIALIZER
+	};
+
+	extern int pthread_setconcurrency (int __level) __THROW;
+
+	void *produce(void* arg)
+	{
+	    for(;;)
+	    {
+		//创建一个临界区锁
+		pthread_mutex_lock(&shared.mutex);
+
+		if(shared.nput >= nitems)
+		{
+		    pthread_mutex_unlock(&shared.mutex);
+		    return NULL;
+		}
+
+		shared.buf[shared.nput] = shared.nval;
+		shared.nput++;
+		shared.nval++;
+		pthread_mutex_unlock(&shared.mutex);
+		*((int *)arg) +=1;
+
+	    }
+	}
+
+	//消费等待
+	void consume_wait(int i)
+	{
+	    for(;;)
+	    {
+		pthread_mutex_lock(&shared.mutex);
+		if(i<shared.nput)
+		{
+		    pthread_mutex_unlock(&shared.mutex);
+		    return;
+		}
+		pthread_mutex_unlock(&shared.mutex);
+	    }
+	}
+
+	void *consume(void* arg)
+	{
+	    int i;
+	    for(i=0;i<nitems;i++)
+	    {
+		consume_wait(i);
+		if(shared.buf[i] != i)
+		{
+		    printf("buf[%d] = %d\n",i,shared.buf[i]);
+		}
+	    }
+	    return NULL;
+	}
+
+	int main(int argc, const char *argv[]){
+	    int i,nthreads,count[MAXNTHREADS];
+
+	    pthread_t tid_produce[MAXNTHREADS],tid_consume;
+
+	    if(argc !=3 )
+	    {
+		printf("\033[error <#items> <threads>\033[0m");
+		exit(-1);
+	    }
+
+	    nitems = min(atoi(argv[1]),MAXNITEM);
+	    nthreads = min(atoi(argv[2]),MAXNTHREADS);
+
+	    //设置内核调用线程的并发数目
+	    pthread_setconcurrency(4);
+
+
+	    //创建生产者线程
+	    for(i=0;i<nthreads;i++)
+	    {
+
+		count[i] = 0;
+		pthread_create(&tid_produce[i],NULL,produce,&count[i]);
+	    }
+
+	    //创建消费者线程
+	    pthread_create(&tid_consume,NULL,consume,NULL);
+
+	    for(i=0;i<nthreads;i++){
+		pthread_join(tid_produce[i],NULL);
+		printf("count[%d] = %d\n",i,count[i]);
+	    }
+
+	    //等待消费者线程
+	    pthread_join(tid_consume,NULL);
+	    return 0;
+	}
+
+给并发级别加1，把额外的消费者线程也计算在内,创建生产者线程后，立即创建消费者线程
+
+produce函数没有变化 
+
+消费者必须要等待：
+
+consume函数的唯一变动是从buff数组中取出下一个条目之前调用consume_wait。
+
+等待生产者：
+
+我们的consume_wait函数必须要等待到生产者生产了第i个条目后，为了检查这个条件，必须要先给生产者上互斥锁，比较i和生产者input的下表。我们必须在查看nput前获得互斥锁，因为某个生产者线程当时可能正在处理这个变量的过程中。
+
+
+####7.5条件变量：等待与信号发送
+
+互斥所用于上锁，条件变量用于等待。这两种不通类型的同步是需要的。
+
+条件变量的类型是pthread_cond_t 的变量，可以使用下面这两个函数
+
+	#include <pthread.h>
+	
+	int pthread_cond_wait(pthread_cond_t *cptr,pthread_mutex_t *mptr);
+	int pthread_cond_signal(pthread_cond_t *cptr);
+	
+	成功返回0，如果失败则返回errno
+	
+这里的signal 一次不是unix的signal信号
+
+这两个函数锁等待的由之得以通知的条件，其定义由我们选择。
+
+每个条件变量总是有一个互斥锁与之关联，我们调用pthread_cond_wait等待其中的某个条件为真的时候，还会制定其条件变量的地址和锁关联的互斥锁的地址。
+
+这两个函数所等待或得以通知的条件，其定义由我们选择：我们在代码中测试这种条件。
+
+每个条件变量总是有一个互斥锁与之关联。我们调用pthread_cond_wait等待某个条件为真的时候，还会指定其条件变量的地址和锁关联的互斥锁地址。
+
+
+	#include <stdio.h>
+	#include <ucontext.h>
+	#include <unistd.h>
+	#include <pthread.h>
+	#include <stdlib.h>
+	#define MAXNITEM 1000000
+	#define MAXNTHREADS 100
+	#define min(x,y) x<y ? x : y
+
+	int nitems;
+
+	int buff[MAXNITEM];
+
+	struct{
+	    pthread_mutex_t mutex;
+	    int nput;
+	    int nval;
+	}put = {
+		PTHREAD_MUTEX_INITIALIZER
+	};
+
+	struct {
+	    pthread_mutex_t mutex;
+	    pthread_cond_t cond;
+	    int nready;
+	}nready = {
+		PTHREAD_MUTEX_INITIALIZER,PTHREAD_COND_INITIALIZER
+	};
+
+	void *produce(void *arg)
+	{
+	    for(;;)
+	    {
+		pthread_mutex_lock(&put.mutex);
+
+		if(put.nput >= nitems)
+		{
+		    pthread_mutex_lock(&put.mutex);
+		    return NULL;
+		}
+
+		buff[put.nput] = put.nval;
+		put.nput++;
+		put.nval++;
+
+		pthread_mutex_unlock(&put.mutex);
+
+		pthread_mutex_lock(&nready.mutex);
+
+		if(nready.nready == 0)
+		    pthread_cond_signal(&nready.cond);
+
+		nready.nready++;
+
+		pthread_mutex_unlock(&nready.mutex);
+
+		*((int *)arg)+=1;
+	    }
+	}
+
+	void *consume(void *arg)
+	{
+	    int i;
+	    for(i=0;i<nitems;i++)
+	    {
+		pthread_mutex_lock(&nready.mutex);
+
+		while(nready.nready == 0)
+		    pthread_cond_wait(&nready.cond,&nready.mutex);
+
+		if(buff[i] != i)
+		{
+		    printf("buf[%d] = %d\n",i,buff[i]);
+		}
+	    }
+	    return NULL;
+	}
+
+1.把生产者变量和互斥所收集到一个结构中：
+
+把互斥所变量mutex与之关联的两个变量nput和nval手机到一个名为put的结构中，生产者使用这个结构。
+
+2.把计数器、条件变量和互斥锁手机到一个结构中
+
+下一个结构含有一个计数器、一个变量和一个互斥锁。我们把条件变量初始化为PTHREAD_COND_INITIALIZER.
+
+main函数没有变动
+
+produce和consume函数变动了,已在图7-7中给出
+
+在数目中防置下一个条目
+
+当生产者往数组buff中防置一个新的条目的时候，我们用put.mutex来为临界区上锁
+
+通知消费者
+
+给用来统计准备好由消费者处理的条目数的计数器nready.nready加1.在加1之前，如果这个计数器是0，那么调用pthread_cond_signal唤醒可能在等待其值变为非0的任意线程。现在可以看出与这个计数器关联的互斥锁和条件变量的相互作用。这个计数器是在生产者和消费者之间共享的，因此只有锁住与之关联的互斥锁才能访问它，与之关联的条件变量则用于等待和发送信号。
+
+消费者等待nready。nready变为非0
+
+消费者只是等待nready变为非0，既然计数器是在所有的生产者和消费者共享的，那么只有锁住与他关联的互斥锁的时候才能测试它。如果在锁住这个互斥锁期间这个计数器的值为0，那么就调用pthread_cond_wait进入睡眠。这个函数原子执行一下两个动作。
+
+1）给nready.mutex解锁
+
+2）把调用线程投入到睡眠当中，指导某个线程就本条件变量调用pthread_cond_signal。
+
+pthread_cond_wait在返回前重新给互斥锁nready.mutex上锁。因此当它返回并且我们发现计数器nready.nready不是0的时候，我们把这个计数器减1，然后给这个互斥锁解锁。注意每当pthread_cond_wait返回的时候，我们总是再次测试相应的条件是否成立与否，因为可能发生虚假的唤醒：期待的条件尚不能成立的时候唤醒。各种线程实现都试图最大限度减少这些虚假的唤醒数目，但是仍然有可能发生。
+
+
+####7.6条件变量：定时等待和广播
+
+通常pthread_cond_signal 只唤醒等待在相应条件变量上的一个线程，在一些情况下一个线程认定有多个其他线程被唤醒，这时它可以调用pthread_cond_broadcast唤醒阻塞在相应条件变量上所有线程。
+
+	#include <pthread.h>
+	int pthread_cond_broadcast(pthread_cond_t *cptr);
+	int pthread_cond_timedwait(pthread_cond_t *cptr,pthread_mutex_t *mptr,const struct timespec);
+	
+这个结构函数必须返回时的系统时间，即便当时相应的条件变量还没有收到信号。如果超出这个情况，会返回ETIMEDOUT错误。
+
+时间值是绝对时间，而不是时间差
+
+####7.7 互斥锁和条件变量的属性
+
+本章节中的互斥所和条件变量例子把它们作为一个进程中的全局变量来存放，它们用于这个进程之间各个线程的同步。这两个常值PTHREAD_MUTEX_INITIALIZER和PTHREAD_COND_INITIALIZER来初始化它们。由这种方式初始化的互斥锁和条件变量具备默认属性。不过我们还能以非默认的属性来初始化它们。
+
+初始化以及摧毁的函数：
+
+	#include <pthread.h>
+	
+	int pthread_mutex_init(pthread_mutex_t  *,mptr,const pthread_mutexattr_t *attr);
+	
+	int pthread_mutex_destroy(pthread_mutex_t *mptr);
+	
+	int pthread_cond_init(pthread_cond_t *cptr,const pthread_condattr_t *attr);
+	
+	int pthread_cond_destroy(pthread_cond_t *cptr);
+	
+如果成功返回0 失败返回errno
+
+互斥锁的属性的数据类型为pthread_mutexattr_t,条件变量属性的类型为pthread_condattr_t,它们由一下函数初始化和摧毁它们
+
+	#include <pthread.h>
+	
+	int pthread_mutexattr_init(pthread_mutexattr_t *attr);
+	int pthread_mutexattr_destroy(pthread_mutexattr_t *attr);	
+	int pthread_condattr_init(pthread_mutexattr_t *attr);
+	int pthread_condattr_destroy(pthread_mutexattr_t *attr);	
+	
+如果成功则返回0，失败则返回errno
+
+其中两个get函数返回在由valptr指向的整数中的这个属性的当前值，两个set函数则根据value的值设置这个属性的当前值。value值可以是PTHREAD_PROCESS_PRIVATE或PTHREAD_PROCESS_SHARED后者也称为进程之间的共享属性。
+
+#####持有锁期间进程终止
+
+当在进程间共享一个互斥锁的时候，持有这个互斥锁的进程在持有期间终止的可能总是有的。没有办法让系统在进程终止的时候释放掉所有锁。我们将会看到读写锁和posix信号量也具备这种属性。进程终止的时候内核总是自动清理唯一的同步锁类型是fcntl记录锁。使用system v 信号量的时候，将应用程序可以选择进程终止时候是否自动清理某个信号量锁。
+
+一个线程也可以在持有某个互斥所期间终止，起因是被另一个线程取消或自己去调用pthread_exit。后者没什么可关注的，因为如果这个线程调用pthread_exit自愿终止的话，他应该指导自己还持有一个互斥锁，如果是被另一个线程取消的情况，那么该线程可以安装将在被取消时候调用的清理处理程序。对于一个线程来说是致命的条件通常还导致整个进程的终止。举例子来说，如果某个线程执行一个无效的指针访问，从而引发了一个SIGSEGV信号，那么这个信号一旦未被捕获，真个进程将被终止，我们于是回到了先前处理进程终止的条件上。
+
+即使一个进程终止时候系统会自动释放某个锁，那也解决不了问题。该锁保护某个临街区很可能是为了在执行该临界区代码期间更新某个数据。如果这个进程在执行临界区的中途终止，这个数据处于什么状态呢？这个数据处于不一致状态可能性很大：举例子来说，一个新条目也许只是部分插入到某个链表中，要是这个进程终止时候内核仅仅把锁解开的话，使用这个链表的下一个进程可能发现他已经损坏。
+
+而在某些例子中，内核在进程终止时候清理掉某个锁，不成问题。例如某个服务器可能使用一个system v信号量来统计当前被处理的客户数。每次fork一个子进程的时候这个信号量+1，当进程终止时候信号量-1.如果这个子进程非正常终止，内核会把这个计数器-1.那儿的守护进程一开始就在自己的某个数据文件上获取一把写入锁，然后在其运行期间一直持有这个锁。如果有人试图启动这个守护进程的两一个副本，新的副本无法取得这个写入所而被终止，从而确保这个守护进程只有一个副本在一直运行。如果这个守护进程不正常的终止，那么内核会释放这个写入所，从而允许这个守护进程的另一个副本启动。

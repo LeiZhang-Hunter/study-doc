@@ -1,0 +1,108 @@
+#System消息队列
+
+System V消息队列使用消息队列标识符。只要有权限任何进程可以往消息队列写，任何进程也可以往消息队列读
+
+在<sys/msg.h>里维护了一个消息头
+
+struct msqid_ds{
+	struct ipc_perm;
+	struct msg *msg_first;
+	struct msg *msg_last;
+	msglen_t	msg_cbytes;
+	msgqnum_t  msg_qnum;//这个消息在队列中的编号
+	msglen_t	msgq_bytes;//最大允许的字节数
+	pid_t 	msg_lspid;//最后发送的进程id
+	pid_t msg_lrpid;//最后接收的进程pid
+	time_t msg_stime;//最后发送时间
+	time_t msg_rtime;//最后收到时间
+	time_t msg_ctime; //最后修改时间
+}
+
+###6.2 msgget函数
+
+msgget函数用于创建一个新的消息队列或访问一个已经存在的消息队列
+
+	#include <sys/msg.h>
+	
+	int msgget(key_t key,int oflag);
+	
+返回值是一个整数标识符，其他三个msg函数用它来指定这个队列。基于key产生的，而key既可以死ftok的返回值,也可以是IPC_PRIVATE
+
+oflag标示读写权限，常见的宏IPC_CREAT,IPC_EXCL按位或
+
+当穿件一个新的消息队列的时候,msqid_ds结构的如下成员被初始化
+
+	msg_perm结构的uid和cuid成员被设置当成这个进程的有效用虎id，gid和cgid成员被设置称为当前进程的有效组ID。
+	
+	oflag中的读写权限位存放在msg_perm.mode中。
+	
+	msg_qnum、msg_lspid、msg_lrpid、msg_stime和msg_rtime被设置为0
+	
+	msg_ctime 被设置成当前的时间
+	
+	msg_qbytes被设置为系统的限制的值。
+	
+###6.3 msgsnd函数
+
+使用msgget打开一个消息队列之后，我们使用msgsnd往其上放置一个消息。
+
+	#include <sys/msg.h>
+	
+	int msgsnd(int msqid,const void *ptr,size_t length,int flag);
+	
+如果成功就返回0，出错就返回-1
+
+ptr有下面的模板
+	
+	struct msgbuf{
+		long mtype;
+		char mtext[1];
+	}
+	
+消息类型必须大于0，因为对于msgrcv函数来说，非正式的消息类型用作特殊的指示器，我们在下一个章节讲述。
+
+msgbuf的结构定义中mtext不大确切，消息的数据不只是局限文本，任何形式都是可以的，无论是二进制数据还是文本，内核根本不解释消息数据的内容。
+
+我们使用模板的说法描述这个结构，因为ptr锁指向的只是一个含有消息类型的长整数，消息本身仅仅跟在他的后面。大多数应用不适用ms_gbuf结构这个定义，因为其数据通常是不够的。
+
+大多数消息有自己的结构
+
+我们也可以定义下面的结构
+
+	typedef struct my_msgbuf{
+		long mtype;
+		int16_t mshortt;
+		char mchar[MY_DATA];
+	}Message;
+	
+我门在使用上面的结构体用msgsnd发送的时候要设置sizeof(Message)-sizeof(long)
+
+flag参数可以是0，也可以是IPC_NOWAIT。调用msg_snd变成了非阻塞，如果没有新的消息就马上返回
+
+	指定队列已经满了
+	
+	系统范围内存在太多消息
+	
+如果有一个条件存在并且IPC_NOWAIT标志已经指定，msgsnd就返回一个EAGAIN错误。如果没指定，那么调用线程投入睡眠。
+
+	具备则存放新的消息空间
+	
+	msgsqid标识的消息队列从系统中删除（返回一个EIDRM错误）
+	
+	调用线程补货一个信号中断，返回EINTR错误
+	
+###6.4 msgrcv函数
+
+使用msgrcv函数从某个消息队列中读出一个消息
+
+	#include <sys/msg.h>
+	
+	size_t msgrcv(int msqid,void *ptr,size_t length,long type,int flag);
+	
+type指的是希望从给定的队列中读出什么样的消息。
+
+如果type为0，就返回这个队列中的第一个消息。既然每个消息队列都是作为一个FIFO链表维护的，因此type为0指定返回该消息队列中最早的消息。
+
+type大于0，那就返回其类型值为type的第一个消息。
+
+如果type小于0，那就返回他的类型值小于或者等于type参数的绝对值的消息中类型值最小的一个消息。
