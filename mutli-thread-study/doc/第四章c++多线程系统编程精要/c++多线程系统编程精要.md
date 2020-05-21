@@ -221,3 +221,82 @@ pthread_getspecific将返回这个刚刚存储的指针。
 
 我们在看下muduo中的代码，如何把线程特定数据应用到实践当中 
 
+说一些注意点，从上面的代码我们了解到在一些版本中，我们的一个进程最多只拥有有限量的特定数据，比如一些posix只有128个，书中的ThreadLocal设计
+的很简单，看一下代码的实现
+
+```
+namespace muduo
+{
+
+template<typename T>
+class ThreadLocal : noncopyable
+{
+ public:
+  ThreadLocal()
+  {
+    MCHECK(pthread_key_create(&pkey_, &ThreadLocal::destructor));
+  }
+
+  ~ThreadLocal()
+  {
+    MCHECK(pthread_key_delete(pkey_));
+  }
+
+  T& value()
+  {
+    T* perThreadValue = static_cast<T*>(pthread_getspecific(pkey_));
+    if (!perThreadValue)
+    {
+      T* newObj = new T();
+      MCHECK(pthread_setspecific(pkey_, newObj));
+      perThreadValue = newObj;
+    }
+    return *perThreadValue;
+  }
+
+ private:
+
+  static void destructor(void *x)
+  {
+    T* obj = static_cast<T*>(x);
+    typedef char T_must_be_complete_type[sizeof(T) == 0 ? -1 : 1];
+    T_must_be_complete_type dummy; (void) dummy;
+    delete obj;
+  }
+
+ private:
+  pthread_key_t pkey_;
+};
+
+}  // namespace muduo
+```
+
+构造函数中,调用pthread_create_key创建了key以及绑定了析构函数,在析构函数中用来销毁key，调用的是pthread_key_delete，
+value函数用来获取值，destructor用来释放内存
+
+不建议使用的是：
+
+pthread_rwlock,读写锁使用起来要谨慎
+
+sem_* 信号量系列
+
+pthread_cancel 和 pthread_kill 出现他们意味着程序设计出现了问题 
+
+我非常推荐这个说法，因为在<<unix网络编程第二卷>>中对各个锁的性能是有比较的，在对一个内存相加的情况下，互斥锁效率是最高的。
+c++多线程编程的难点在于理解库函数和系统调用的关系  
+
+####4.2 c\c++的安全性
+
+多线程的出现给传统的编程带来了冲击，例如:
+
+1.errno不再是一个全局变量,因为不同的线程可能执行不同的系统库函数
+
+2.有些纯函数是不受影响的，比如malloc\free、printf和fread、fseek等等。
+
+3.有些使用静态变量的函数不可能不受到影响，可以使用例如asctime_r,ctime_r,gmtime_r和stderror_r还有stock_r
+
+4.传统的fork模型不再适合多线程
+
+我们看一下unix网络编程第二卷中的规定的glibc系统函数，简单的了解一下书中记载的部分函数
+
+![](pthread_function.png)
