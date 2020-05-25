@@ -401,3 +401,281 @@ glibc并没有提供这个函数，我们要自己写，我们看一下muduo是�
 
 
 ######4.4.2 exit(3)不是线程安全的
+
+exit(3)函数在c++中的作用除了终止,还会析构全局对象和已经构造完成的函数静态对象。这又潜在的死锁的可能性，考虑下面的例子
+
+```
+#include <vector>
+#include <string>
+#include <assert.h>
+#include <iostream>
+#include <zconf.h>
+#include <fcntl.h>
+#include <syscall.h>
+
+class noncopyable{
+protected:
+    noncopyable() = default;
+    ~noncopyable() = default;
+
+private:
+    noncopyable(const noncopyable&) = delete;
+    const noncopyable& operator=( const noncopyable& ) = delete;
+};
+
+
+class MutexLock :public noncopyable{
+public:
+    MutexLock()
+    {
+        pthread_mutexattr_init(&mutexattr);
+        pthread_mutex_init(&mutex, nullptr);
+    }
+
+    MutexLock(int type)
+    {
+        int res;
+        pthread_mutexattr_init(&mutexattr);
+        res = pthread_mutexattr_settype(&mutexattr,type);
+        pthread_mutex_init(&mutex, &mutexattr);
+    }
+
+    ~MutexLock()
+    {
+        pthread_mutex_destroy(&mutex);
+    }
+
+    int lock()
+    {
+        int res = pthread_mutex_lock(&mutex);
+        return res;
+    }
+
+    void unLock()
+    {
+        pthread_mutexattr_destroy(&mutexattr);
+        pthread_mutex_unlock(&mutex);
+    }
+
+    pthread_mutex_t* getMutex()
+    {
+        return &mutex;
+    }
+private:
+    pthread_mutex_t mutex;
+    pthread_mutexattr_t mutexattr;
+};
+
+class MutexLockGuard
+{
+public:
+    MutexLockGuard(MutexLock & mutex)
+            : _mutex(mutex)
+    {
+        _mutex.lock();
+    }
+
+    ~MutexLockGuard()
+    {
+        _mutex.unLock();
+    }
+
+private:
+    MutexLock & _mutex;
+};
+
+void someFunctionMayCallExit()
+{
+    exit(1);
+}
+
+class GlobalObject
+{
+public:
+    void doit()
+    {
+        MutexLockGuard lock(mutex_);
+        someFunctionMayCallExit();
+    }
+
+    ~GlobalObject()
+    {
+        printf("GlobalObject:~GlobalObject\n");
+        MutexLockGuard lock(mutex_);
+        printf("GlobalObject:~GlobalObject cleaning\n");
+    }
+
+private:
+    MutexLock mutex_;
+};
+
+GlobalObject g_obj;
+
+int main()
+{
+    g_obj.doit();
+}
+```
+
+这个例子是非常有意思的一个程序，我们使用这个程序发生了死锁，命名exit之后在我的认知里程序应该正常退出了，但是它并没有，而是死锁了！
+
+我们在这里思考，为什么会死锁呢？
+
+doit中辗转调用了exit之后，从而触发了全局析构函数~GlobalObject(),他试图对mutex加锁，然而此时mutex被锁住了，于是造成了死锁。
+
+我们再举一个调用纯虚函数导致程序崩溃的例子，假如有一个策略基类，在运行时候我们会根据情况使用不同的无状态策略。由于策略是无状态的，因此可以共
+享派生类对象，不必每次都去新建。这里以日历基类和不同国家的假期为例子，factory函数返回某个全局对象的引用，而不是每次都创建新的派生类对象。
+
+![](demo-exit-1.png)
+
+上面的程序当我们在exit时候，析构了全局对象，当我们另一个线程在调用isHoliday的时候会挂掉。
+
+如果一个线程调用了exit，析构了全局对象Date，另一个线程调用isHoliday的时候会出现core dump
+
+可见对现场当中exit不是意见容易的事情，我们需要精心设计析构函数的顺序，防止各个线程访问导致对象失效的问题。
+
+####4.5善用__thread关键字
+
+__thread是gcc内部的存储设施，比pthread_key_t要快。__thread的存储效率可以和全局变量相比较
+
+```
+
+int g_var;
+__thread int t_var;
+
+void foo()
+{
+    g_var = 1;
+    t_var = 2;
+}
+
+```
+
+书中展示了汇编的截图，我们只要看其中的两个mov1就可以。
+
+![](__thread.png)
+
+发现效率确实是比较高的，跟操作全局变量一样，只有两个mov1，前面的push pop这些都是操作函数栈的不需要关心。
+
+__thread 是不能用来修饰class类型的，只能用来修饰POD对象，书中的POD对象指的是
+
+我从网上
+
+```
+POD全称Plain Old Data。通俗的讲，一个类或结构体通过二进制拷贝后还能保持其数据不变，那么它就是一个POD类型。
+
+标准布局的定义
+1.所有非静态成员有相同的访问权限
+
+2.继承树中最多只能有一个类有非静态数据成员
+
+3.子类的第一个非静态成员不可以是基类类型
+
+4.没有虚函数
+
+5.没有虚基类
+
+6.所有非静态成员都符合标准布局类型
+
+
+```
+
+无法调用class的一个重要原因是因为他无法调用构造函数
+
+```
+#include <pthread.h>
+#include <cstdio>
+#include <cstdlib>
+#include <assert.h>
+#include <stdint.h>
+
+class A{
+public:
+    int b;
+    A(int data)
+    {
+        a = data;
+    }
+private:
+    int a;
+};
+
+__thread class A a = 3;
+int main(int argc, char const *argv[])
+{
+    a.b = 2;
+    return 0;
+}
+
+```
+
+下面写一个demo看一下，__thread修饰的变量是否在各个线程里有一个独立的实体
+
+```
+#include <pthread.h>
+#include <cstdio>
+#include <cstdlib>
+#include <assert.h>
+#include <stdint.h>
+#include <unistd.h>
+
+__thread uint64_t pkey = 0;
+
+void* run2( void* arg )
+{
+    pkey = 8;
+    printf("run2-ptr:%p\n",&pkey);
+    printf("run2:%ld\n",pkey);
+    return NULL;
+}
+
+void* run1( void* arg )
+{
+    printf("run1-ptr:%p\n",&pkey);
+    printf("run1:%ld\n",pkey);
+
+    return NULL;
+}
+
+int main(int argc, char const *argv[])
+{
+    pthread_t threads[2];
+    pthread_create( &threads[1], NULL, run2, NULL );
+    sleep(1);
+    pthread_create( &threads[0], NULL, run1, NULL );
+    pthread_join( threads[0], NULL );
+    pthread_join( threads[1], NULL );
+    return 0;
+}
+
+```
+
+到这里我们看到由于加上了__thread 本来第二个线程用该输出8 结果变成了0，并没有根据第一个线程的变化而变化
+
+####4.6 多线程和IO
+
+文中说操作文件的io是线程安全的，这个我不是很确定，我一直是用pread和pwrite去处理文件io的，我之前写过demo，做过实验，多个线程操作同一个socket
+确实是需要上锁的，如果不上锁会出现问题的
+
+```
+git@github.com:LeiZhang-Hunter/sendDemo.git
+```
+
+其实这个问题本身意义不大，read和write都是原子的，那么我们多线程读写一个文件的内容，如果要操作，那么很容易出问题，在不上锁的情况下，静态条件
+难以避免，时序问题也是一个问题，所以我认为每个描述符尽量只由一个线程去操作。
+
+
+
+####4.7用RAII去封装描述符
+
+程序刚启动的时候大家都知道的三个描述符 
+
+0 1 2 标准输入 标准输出 标准错误输出，posix标准规定每次打开文件的时候描述符必须是当前最小的号码，其实多线程对于描述符的接口就像我们写fpm接
+口一样，多线程频繁的read close同一个描述符必然会出现问题，就像我们一个点赞接口频繁的 点赞 取消点赞 如果不加锁，那么这个接口将会是非常危险的
+，很容易被人刷赞，更糟糕的情况下，频繁取消点赞都可能变为负数，这真的是非常糟糕，多线程close 和 read 将会导致描述符串号这一点就不用多说了，
+一个线程已经在read，另一个线程close掉了，将会发生很多危险的事情
+
+c++里采取RAII手法去做这件事，用socket对象去包装描述符，把关闭放到析构里面去处理。只要socket还活着，就不会有其他socket对象跟他一样的描述符。
+当然在这里的对象不要采取 new 这种形式非常危险，可以采用只能指针这将是非常安全的。
+
+我十分赞同书中的思想，尽量少用delete new，尽量采用智能指针。
