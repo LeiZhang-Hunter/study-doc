@@ -685,3 +685,134 @@ c++里采取RAII手法去做这件事，用socket对象去包装描述符，把�
 
 在编写c c++ 的时候，我们总是保证对象的构造和析构函数总是成对出现的，否则一定会有内存泄露，但是加入我们使用fork，将会很糟糕，会破坏这一个假设。
 
+因为fork之后，子进程会继承地址空间和空间描述符，因此用于管理动态内存和文件描述符的RAII class 都能正常工作。但是子进程不能继承。
+
+比如说：
+
+1.父进程的内存所，mlock、mlockall
+
+2.父进程的文件锁 fcntl(2)
+
+3.父进程的某些定时器 settimer  alarm  timer_create
+
+4.看一下man的介绍 man 2 fork 可以直接查看
+
+![](fork.png)
+
+具体不会继承的内容 分别是
+
+1）进程id
+
+2）内存锁
+
+3）未决信号集
+
+4）信号量
+
+5）文件锁 
+
+6）timer系列函数
+
+7）父进程未完成的io
+
+####4.9 多线程和fork
+书中介绍了fork一般只会克隆控制线程 其他的线程都是会消失的，也就是说不能fork出一个同样多线程的子进程，稍后会写一个demo看一下，fork之后只会有
+一个线程其他的线程都会小时，这会造成一个十分危险的局面。其他线程正好处在临界区内，持有了某个锁，而他突然死亡，再也没有机会去解锁了。如果子进程
+试图对mutex加锁，会立刻造成死锁。
+
+```
+也就是说，如果主线程内有一个公共的锁，被其他线程持有了，这时候你fork之后只会保留控制线程，其他的线程占有了锁，你fork之后其他线程都没了，那
+这个锁一旦被使用，那真的是灾难性的了，会造成死锁。
+```
+
+也就是说这个时候调用一系列函数可能是危险的：
+
+1.malloc，malloc访问全局变量几乎都会有锁（这个我不是很清楚，毕竟没看过malloc部分的源码）
+
+2.new、map::insert、snprintf......
+
+3.不能使用pthread_signal去通知父进程，只能通过pipe
+
+4.printf系列函数
+
+5.man7中定义的 signal可重入以外的任何函数
+
+到这我自己写了一个例子：
+
+```
+#include <pthread.h>
+#include <cstdio>
+#include <cstdlib>
+#include <assert.h>
+#include <stdint.h>
+#include <unistd.h>
+
+__thread uint64_t pkey = 0;
+
+void* run2( void* arg )
+{
+    while(1)
+    {
+        printf("%d\n",getpid());
+        sleep(2);
+    }
+    return NULL;
+}
+
+void* run1( void* arg )
+{
+
+    while(1)
+    {
+        printf("%d\n",getpid());
+        sleep(2);
+    }
+    return NULL;
+}
+
+int main(int argc, char const *argv[])
+{
+    printf("parent:%d\n",getpid());
+    pthread_t threads[2];
+    pthread_create( &threads[1], NULL, run2, NULL );
+    sleep(1);
+    pthread_create( &threads[0], NULL, run1, NULL );
+    pid_t pid = fork();
+    if(pid > 0)
+    {
+        pthread_join( threads[0], NULL );
+        pthread_join( threads[1], NULL );
+    }else{
+        printf("son:%d\n",getpid());
+        while (1)
+        {
+            sleep(2);
+        }
+    }
+
+    return 0;
+}
+
+```
+
+运行结果
+
+```
+parent:31424
+31424
+31424
+son:31436
+31424
+31424
+31424
+31424
+31424
+31424
+```
+
+印证了书中的说法，只有父辈的线程在运行，子线程没有运行
+
+####4.10 多线程与signal
+
+尽量不要在多线程中用signal
+
