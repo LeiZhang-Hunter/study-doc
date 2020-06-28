@@ -1,0 +1,1 @@
+#mysql的事务日志redo-log和undo-log
