@@ -70,7 +70,7 @@ ERROR 1062 (23000): Duplicate entry '1' for key 'PRIMARY'
 
 1.设置事务隔离级别为串行化
 
-设置事务隔离级别串行化
+设置事务隔离级别串行化,全部变为串行了，在另一个插入操作会阻塞，会一直等上一个事务执行完才会执行下一个
 ```
 set session transaction isolation level Serializable;
 ```
