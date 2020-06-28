@@ -6,6 +6,8 @@ mysql事务的特性
 
 原子性 一致性 隔离性 持久性
 
+隔离性是每一个事务不受影响，不会因为A事务的修改或写入操作影响b事务
+
 同时隔离性又有4个隔离级别
 
 read uncommitted、read committed、repeatable red、serialize
