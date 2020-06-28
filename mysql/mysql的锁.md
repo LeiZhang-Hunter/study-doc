@@ -1,5 +1,7 @@
 #mysql的锁
 
+##mysql行锁
+
 ####mysql 的读锁
 
 mysql的读锁，也叫共享锁
@@ -121,3 +123,54 @@ WHERE id=1 and version=1
 
 这有点像一个非阻塞模式，但是这个失败之后不会重试 而其他的悲观锁会穿行，等待上一个完成之后继续执行，要根据业务场景酌情使用。
 
+
+
+##mysql的表锁
+
+1.MyISAM 不支持事务会锁表
+MySQL的存储引擎是从MyISAM到InnoDB，锁从表锁到行锁。后者的出现从某种程度上是弥补前者的不足。比如：MyISAM不支持事务，InnoDB支持事务。
+表锁虽然开销小，锁表快，但高并发下性能低。行锁虽然开销大，锁表慢，但高并发下相比之下性能更高。事务和行锁都是在确保数据准确的基础上提高并发
+的处理能力。本章重点介绍InnoDB的行锁。
+
+2.没有命中索引行锁会自动升级为表锁
+当我们使用排它锁进行查询，但这时候检索条件没有命中索引，这时候会触发表锁，这个表不能进行任何的写入或者更新
+
+T1表 查询version 这时候version 并没有加索引，这样就不会命中索引
+```
+mysql> begin;
+Query OK, 0 rows affected (0.00 sec)
+
+mysql> select * from version where version=44 for update;
++----+---------+
+| id | version |
++----+---------+
+|  1 |      44 |
++----+---------+
+1 row in set (0.00 sec)
+
+```
+
+这时候会触发表锁,在t2中进行写入或者更新都会阻塞住，不能对这个表进行任何操作
+
+```
+mysql> insert version (id,version) value (14,1);
+^C^C -- query aborted
+ERROR 1317 (70100): Query execution was interrupted
+mysql> update version set version=444 where id=10;
+^C^C -- query aborted
+ERROR 1317 (70100): Query execution was interrupted
+mysql> select * from version where id=1;
++----+---------+
+| id | version |
++----+---------+
+|  1 |      44 |
++----+---------+
+1 row in set (0.00 sec)
+
+```
+
+只是可以进行读取
+
+结论：行锁没有命中索引的时候会升级为表锁。
+
+原因是没加锁的时候mysql要扫描表，这时候mysql认为加很多行锁没有必要，会自动升级为表锁。
