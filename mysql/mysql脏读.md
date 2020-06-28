@@ -16,6 +16,8 @@ read uncommitted、read committed、repeatable red、serialize
 
 一个事务可以读取到另一个线程未提交的事务
 
+隔离级别在 未提交读（Read uncommitted） 时候可能出现
+
 ######为什么会出现脏读
 案例分析
 我们首先设置事务为未隔离级别 设置为 未提交读
