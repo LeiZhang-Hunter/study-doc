@@ -189,3 +189,6 @@ rdb体积小 aof文件大
 
 恢复速度rdb块 aof慢
 
+双支持 :
+
+aof-use-rdb-preamble yes
